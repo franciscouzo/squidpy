@@ -1,18 +1,52 @@
 from __future__ import annotations
 
+from itertools import permutations
 from typing import Any, Literal
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 from anndata import AnnData
 from pandas.testing import assert_frame_equal
+from scipy.sparse import csc_matrix, csr_matrix
 
 from squidpy._constants._pkg_constants import Key
 from squidpy.gr import co_occurrence, spatial_autocorr
-from squidpy.gr._ppatterns import _find_min_max
+from squidpy.gr._ppatterns import _find_min_max, _score_helper
 
 MORAN_K = "moranI"
 GEARY_C = "gearyC"
+
+
+@pytest.mark.parametrize("mode", ["moran", "geary"])
+@pytest.mark.parametrize("matrix_type", [np.asarray, csr_matrix, csc_matrix], ids=["dense", "csr", "csc"])
+def test_spatial_autocorr_permutation_null(mode: str, matrix_type):
+    """Enumerating every labeling must recover the exact null on a fixed four-cell path."""
+    weights = np.array([[0, 1, 0, 0], [0.5, 0, 0.5, 0], [0, 0.5, 0, 0.5], [0, 0, 1, 0]])
+    graph = csr_matrix(weights)
+    values = np.array([[0.0, 1.0, 2.0, 3.0], [0.0, 2.0, 1.0, 4.0]])
+    labelings = list(permutations(range(values.shape[1])))
+    rng = Mock(spec=np.random.Generator)
+    rng.permutation.side_effect = [np.array(labeling) for labeling in labelings]
+
+    scores = _score_helper(list(range(len(labelings))), mode, graph, matrix_type(values), rngs=[rng] * len(labelings))
+
+    # Independent definitions of Moran's I and Geary's C, using the original weights for every labeling.
+    expected = np.empty_like(scores)
+    n = values.shape[1]
+    for i, labeling in enumerate(labelings):
+        for j, x in enumerate(values[:, labeling]):
+            centered = x - x.mean()
+            denominator = weights.sum() * np.sum(centered**2)
+            if mode == "moran":
+                expected[i, j] = n * np.sum(weights * np.outer(centered, centered)) / denominator
+            else:
+                differences = x[:, None] - x[None, :]
+                expected[i, j] = (n - 1) * np.sum(weights * differences**2) / (2 * denominator)
+
+    np.testing.assert_allclose(scores, expected, atol=1e-12)
+    np.testing.assert_allclose(scores.mean(axis=0), -1 / (n - 1) if mode == "moran" else 1, atol=1e-12)
+    np.testing.assert_array_equal(graph.toarray(), weights)
 
 
 @pytest.mark.parametrize("mode", ["moran", "geary"])

@@ -98,6 +98,11 @@ def spatial_autocorr(
 
     See :cite:`pysal` for reference.
 
+    .. versionchanged:: 1.8.5
+        Permutations now shuffle observation values over a fixed spatial graph instead of shuffling
+        only the rows of the weights matrix. This corrects the null distribution used for
+        ``'pval_sim'``, ``'pval_z_sim'`` and ``'var_sim'``.
+
     .. versionchanged:: 1.8.2
         The analytic (normality-assumption) variance for Geary's C was corrected; previously the
         Moran's I variance was reused for ``mode = 'geary'``. As a result, ``'var_norm'`` and
@@ -280,18 +285,19 @@ def _score_helper(
     perms: Sequence[int],
     mode: Literal["moran", "geary"],
     g: spmatrix,
-    vals: NDArrayA,
+    vals: NDArrayA | spmatrix,
     rngs: Sequence[np.random.Generator],
     *,
     queue: SigQueue | None = None,
-) -> pd.DataFrame:
+) -> NDArrayA:
     score_perms = np.empty((len(perms), vals.shape[0]))
     func = morans_i if mode == "moran" else gearys_c
 
     for i, p in enumerate(perms):
         rng = rngs[p]
         idx_shuffle = rng.permutation(g.shape[0])
-        score_perms[i, :] = func(g[idx_shuffle, :], vals)
+        # Randomize observations while preserving the spatial relationships in the graph.
+        score_perms[i, :] = func(g, vals[:, idx_shuffle])
 
         if queue is not None:
             queue.put(Signal.UPDATE)
