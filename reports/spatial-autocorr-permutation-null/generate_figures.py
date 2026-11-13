@@ -25,7 +25,7 @@ from matplotlib.path import Path as PlotPath
 from numba import set_num_threads
 from scanpy.metrics import gearys_c, morans_i
 from scipy.sparse import csr_matrix
-from scipy.stats import ks_2samp, permutation_test
+from scipy.stats import ks_2samp, kstest, norm
 from sklearn.preprocessing import normalize
 
 from squidpy.gr._ppatterns import _score_helper
@@ -34,7 +34,6 @@ OUT = Path(__file__).resolve().parent
 BEFORE = "#C45C26"
 AFTER = "#2166AC"
 EXPECTED = "#183E2F"
-KS_RESAMPLES = 9999
 MODES = {"moran": (morans_i, "Moran’s I"), "geary": (gearys_c, "Geary’s C")}
 
 
@@ -61,9 +60,7 @@ def reference_scores(graph: csr_matrix, values: np.ndarray, orders: np.ndarray, 
     return (n - 1) * numerator / (2 * denominator)
 
 
-def compare(
-    graph: csr_matrix, values: np.ndarray, orders: np.ndarray, *, reference_orders: np.ndarray | None = None
-) -> dict:
+def compare(graph: csr_matrix, values: np.ndarray, orders: np.ndarray) -> dict:
     scores = {}
     for mode, (func, _) in MODES.items():
         # This is the removed expression; use the same orders as the corrected implementation.
@@ -73,60 +70,66 @@ def compare(
         after = _score_helper(list(range(len(orders))), mode, graph, values, rngs=[rng] * len(orders))[:, 0]
         reference = reference_scores(graph, values, orders, mode)
         np.testing.assert_allclose(after, reference, atol=1e-12)
-        expected = reference if reference_orders is None else reference_scores(graph, values, reference_orders, mode)
-        scores[mode] = {"before": before, "after": after, "expected": expected}
+        scores[mode] = {"before": before, "after": after}
     return scores
 
 
-def ks_comparison(sample: np.ndarray, expected: np.ndarray, *, rng: np.random.Generator | None = None) -> dict:
-    """Two-sided KS distance, with a pooled-label permutation p-value for independent samples.
+def permutation_moments(graph: csr_matrix, values: np.ndarray) -> dict:
+    """Exact randomization moments used to parameterize the large-graph Normal approximation.
 
-    Rounding identifies mathematical ties despite harmless floating-point evaluation differences.
-    A missing RNG denotes complete enumeration: report the population distance without a p-value.
+    Cliff & Ord (1981), as implemented in esda.Moran.VI_rand and esda.Geary.VC_rand.
+    The expression vector is fixed: its kurtosis enters the conditional permutation variance.
+    These parameters are not fitted to any of the simulated statistic scores.
     """
-    sample = np.round(sample, 12)
-    expected = np.round(expected, 12)
-    support, ranks = np.unique(np.concatenate([sample, expected]), return_inverse=True)
-    pooled_counts = np.bincount(ranks, minlength=len(support))
-    sample_ranks, expected_ranks = ranks[: len(sample)], ranks[len(sample) :]
+    n = graph.shape[0]
+    z = values.ravel() - values.mean()
+    kurtosis = n * np.sum(z**4) / np.sum(z**2) ** 2
+    s0 = float(graph.sum())
+    symmetric_weights = graph + graph.T
+    s1 = float(symmetric_weights.multiply(symmetric_weights).sum() / 2)
+    incident_weights = np.asarray(graph.sum(axis=1)).ravel() + np.asarray(graph.sum(axis=0)).ravel()
+    s2 = float(np.sum(incident_weights**2))
+    s02 = s0**2
 
-    # Once scores have been ranked, resampling needs only counts, not another sort at every draw.
-    def statistic(x: np.ndarray, y: np.ndarray) -> float:
-        counts = np.bincount(x, minlength=len(support))
-        gap = counts.cumsum() / len(x) - (pooled_counts - counts).cumsum() / len(y)
-        return float(np.max(np.abs(gap)))
+    a = n * ((n**2 - 3 * n + 3) * s1 - n * s2 + 3 * s02)
+    b = kurtosis * ((n**2 - n) * s1 - 2 * n * s2 + 6 * s02)
+    moran_mean = -1 / (n - 1)
+    moran_variance = (a - b) / ((n - 1) * (n - 2) * (n - 3) * s02) - moran_mean**2
 
-    distance = statistic(sample_ranks, expected_ranks)
-    np.testing.assert_allclose(distance, ks_2samp(sample, expected, method="asymp").statistic, atol=1e-12)
-    result = {"statistic": distance, "pvalue": None, "calibration": "complete enumeration; descriptive distance"}
-    if rng is not None:
-        test = permutation_test(
-            (sample_ranks, expected_ranks),
-            statistic,
-            permutation_type="independent",
-            vectorized=False,
-            alternative="greater",
-            n_resamples=KS_RESAMPLES,
-            batch=64,
-            rng=rng,
-        )
-        result.update(
-            pvalue=float(test.pvalue),
-            calibration="pooled-label permutation test of the two-sided KS statistic",
-            n_resamples=len(test.null_distribution),
-        )
-    return result
+    a = (n - 1) * s1 * (n**2 - 3 * n + 3 - (n - 1) * kurtosis)
+    b = (n - 1) * s2 * (n**2 + 3 * n - 6 - (n**2 - n + 2) * kurtosis) / 4
+    c = s02 * (n**2 - 3 - (n - 1) ** 2 * kurtosis)
+    geary_variance = (a - b + c) / (n * (n - 2) * (n - 3) * s02)
+    return {
+        "weight_moments": {"s0": s0, "s1": s1, "s2": s2},
+        "expression_kurtosis": float(kurtosis),
+        "moran": {"mean": moran_mean, "variance": float(moran_variance)},
+        "geary": {"mean": 1.0, "variance": float(geary_variance)},
+    }
 
 
-def summary(scores: dict, n: int, exact: bool, *, ks_rng: np.random.Generator | None = None) -> dict:
+def normal_ks(sample: np.ndarray, moments: dict) -> dict:
+    """One-sample KS diagnostic against the analytic large-graph approximation.
+
+    The continuous Normal target is approximate at finite graph size. Its parameters are analytic
+    conditional moments, not estimates from this sample. The p-value assesses that Normal target.
+    """
+    distribution = norm(loc=moments["mean"], scale=np.sqrt(moments["variance"]))
+    test = kstest(sample, distribution.cdf, alternative="two-sided", method="exact")
+    return {
+        "statistic": float(test.statistic),
+        "pvalue": float(test.pvalue),
+        "calibration": "one-sample KS against the continuous asymptotic Normal approximation",
+    }
+
+
+def summary(scores: dict, moments: dict, *, exact: bool) -> dict:
     result = {}
-    ks_rngs = iter(ks_rng.spawn(2 * len(scores))) if ks_rng is not None else None
     for mode, distributions in scores.items():
-        expected_mean = -1 / (n - 1) if mode == "moran" else 1.0
         if exact:
-            np.testing.assert_allclose(distributions["after"].mean(), expected_mean, atol=1e-12)
+            np.testing.assert_allclose(distributions["after"].mean(), moments[mode]["mean"], atol=1e-12)
+            np.testing.assert_allclose(distributions["after"].var(), moments[mode]["variance"], atol=1e-12)
         result[mode] = {
-            "expected_mean": expected_mean,
             "before": {
                 "mean": float(distributions["before"].mean()),
                 "variance": float(distributions["before"].var()),
@@ -135,20 +138,22 @@ def summary(scores: dict, n: int, exact: bool, *, ks_rng: np.random.Generator | 
                 "mean": float(distributions["after"].mean()),
                 "variance": float(distributions["after"].var()),
             },
-            "expected": {
-                "mean": float(distributions["expected"].mean()),
-                "variance": float(distributions["expected"].var()),
-            },
-            "ks": {
-                algorithm: ks_comparison(
-                    distributions[algorithm],
-                    distributions["expected"],
-                    rng=next(ks_rngs) if ks_rngs is not None else None,
-                )
-                for algorithm in ["before", "after"]
-            },
             "before_after_variance_ratio": float(distributions["before"].var() / distributions["after"].var()),
         }
+        if exact:
+            distance = ks_2samp(
+                np.round(distributions["before"], 12), np.round(distributions["after"], 12), method="asymp"
+            ).statistic
+            result[mode]["ks_before_after"] = {
+                "statistic": float(distance),
+                "pvalue": None,
+                "calibration": "complete enumeration; descriptive before/after distance",
+            }
+        else:
+            result[mode]["asymptotic_normal"] = moments[mode]
+            result[mode]["ks"] = {
+                algorithm: normal_ks(distributions[algorithm], moments[mode]) for algorithm in ["before", "after"]
+            }
     return result
 
 
@@ -232,41 +237,29 @@ def plot_mechanism(weights: np.ndarray) -> None:
 
 
 def plot_distributions(scores: dict, metrics: dict, *, exact: bool) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(13.5, 7.2), layout="constrained")
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 7.2 if exact else 7.6), layout="constrained")
     title = (
         "Exact null distributions: all 24 labelings of four cells"
         if exact
         else "The variance error persists on a 16 × 16 grid"
     )
     subtitle = (
-        "Expected distribution from independent mathematical definitions · exact KS distances"
+        "Same starting graph and expression inputs · before/after comparison"
         if exact
-        else "4,096 tested permutations · 4,096 independent reference permutations · permutation-calibrated KS tests"
+        else "4,096 permutations · analytic asymptotic Normal null · one-sample KS diagnostics"
     )
     fig.suptitle(f"{title}\n{subtitle}", fontsize=14, fontweight="bold")
     for ax, (mode, (_, label)) in zip(axes, MODES.items(), strict=True):
         before, after = scores[mode]["before"], scores[mode]["after"]
-        expected = scores[mode]["expected"]
         if exact:
             unique = np.unique(np.round(np.concatenate([before, after]), 12))
             width = min(np.diff(unique).min() * 0.38, 0.04)
             for values, color, offset, name in [(before, BEFORE, -0.5, "Before"), (after, AFTER, 0.5, "After")]:
                 positions, counts = np.unique(np.round(values, 12), return_counts=True)
                 ax.bar(positions + offset * width, counts / len(values), width=width, color=color, label=name)
-            positions, counts = np.unique(np.round(expected, 12), return_counts=True)
-            ax.plot(
-                positions,
-                counts / len(expected),
-                linestyle="none",
-                marker="_",
-                markersize=15,
-                markeredgewidth=2.4,
-                color=EXPECTED,
-                label="Expected (exact)",
-            )
             ax.set_ylabel("Exact probability mass")
         else:
-            bins = np.histogram_bin_edges(np.concatenate([before, after, expected]), bins=45)
+            bins = np.histogram_bin_edges(np.concatenate([before, after]), bins=45)
             ax.hist(
                 [before, after],
                 bins=bins,
@@ -276,20 +269,18 @@ def plot_distributions(scores: dict, metrics: dict, *, exact: bool) -> None:
                 color=[BEFORE, AFTER],
                 label=["Before", "After"],
             )
-            ax.hist(
-                expected,
-                bins=bins,
-                density=True,
-                histtype="step",
+            moments = metrics[mode]["asymptotic_normal"]
+            target = norm(loc=moments["mean"], scale=np.sqrt(moments["variance"]))
+            support = np.linspace(min(bins[0], target.ppf(0.0001)), max(bins[-1], target.ppf(0.9999)), 1000)
+            ax.plot(
+                support,
+                target.pdf(support),
                 linestyle="--",
-                linewidth=2.3,
+                linewidth=2.4,
                 color=EXPECTED,
-                label="Expected (independent MC)",
+                label="Expected (asymptotic Normal)",
             )
             ax.set_ylabel("Estimated density")
-        ax.axvline(
-            metrics[mode]["expected_mean"], color="#34495E", linestyle="--", linewidth=1.5, label="Expected null mean"
-        )
         ax.set_xlabel(label)
         ax.set_title(label, fontsize=14, fontweight="bold", pad=10)
         handles, labels = ax.get_legend_handles_labels()
@@ -300,17 +291,19 @@ def plot_distributions(scores: dict, metrics: dict, *, exact: bool) -> None:
         b, a = metrics[mode]["before"], metrics[mode]["after"]
         # Avoid displaying numerical roundoff in an analytically zero mean.
         bmean = 0.0 if abs(b["mean"]) < 1e-12 else b["mean"]
-        ks = metrics[mode]["ks"]
         if exact:
             ks_text = (
-                f"KS before D={ks['before']['statistic']:.4f}    after D={ks['after']['statistic']:.4f}\n"
+                f"KS D(Before, After)={metrics[mode]['ks_before_after']['statistic']:.4f}\n"
                 "Complete enumeration: no sampling p-value"
             )
         else:
+            ks = metrics[mode]["ks"]
             ks_text = "\n".join(
-                f"KS {name:<6} D={ks[name]['statistic']:.4f}   p_perm={ks[name]['pvalue']:.4g}"
+                f"KS {name:<6} D={ks[name]['statistic']:.4f}   p_N={ks[name]['pvalue']:.3g}"
                 for name in ["before", "after"]
             )
+            moments = metrics[mode]["asymptotic_normal"]
+            ks_text = f"Theory   mean {moments['mean']: .5f}   variance {moments['variance']:.6f}\n{ks_text}"
         ax.text(
             0,
             -0.27,
@@ -347,7 +340,8 @@ def main() -> None:
     exact_values = np.array([[0.0, 1.0, 2.0, 3.0]])
     exact_orders = np.array(list(permutations(range(4))))
     exact_scores = compare(exact_graph, exact_values, exact_orders)
-    exact_metrics = summary(exact_scores, n=4, exact=True)
+    exact_moments = permutation_moments(exact_graph, exact_values)
+    exact_metrics = summary(exact_scores, exact_moments, exact=True)
     export_scores(exact_scores, "exact-null-scores.csv")
     plot_mechanism(weights)
     plot_distributions(exact_scores, exact_metrics, exact=True)
@@ -356,10 +350,9 @@ def main() -> None:
     expression_rng, permutation_rng = np.random.default_rng(42).spawn(2)
     values = expression_rng.normal(size=(1, graph.shape[0]))
     orders = np.array([permutation_rng.permutation(graph.shape[0]) for _ in range(4096)])
-    reference_rng = np.random.default_rng(43)
-    reference_orders = np.array([reference_rng.permutation(graph.shape[0]) for _ in range(4096)])
-    grid_scores = compare(graph, values, orders, reference_orders=reference_orders)
-    grid_metrics = summary(grid_scores, n=graph.shape[0], exact=False, ks_rng=np.random.default_rng(44))
+    grid_scores = compare(graph, values, orders)
+    grid_moments = permutation_moments(graph, values)
+    grid_metrics = summary(grid_scores, grid_moments, exact=False)
     export_scores(grid_scores, "grid-null-scores.csv")
     plot_distributions(grid_scores, grid_metrics, exact=False)
 
@@ -369,11 +362,8 @@ def main() -> None:
             "n_cells": graph.shape[0],
             "n_permutations": len(orders),
             "seed": 42,
-            "n_reference_permutations": len(reference_orders),
-            "reference_seed": 43,
-            "ks_seed": 44,
-            "ks_resamples": KS_RESAMPLES,
-            "ks_score_rounding_decimals": 12,
+            "expected_distribution": "asymptotic Normal approximation with analytic conditional permutation moments",
+            "permutation_moments": grid_moments,
             "metrics": grid_metrics,
         },
         "versions": {name: version(name) for name in ["numpy", "scipy", "pandas", "scanpy", "matplotlib", "numba"]},
