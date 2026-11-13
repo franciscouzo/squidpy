@@ -13,6 +13,22 @@
           "mean": -0.3333333333333333,
           "variance": 0.21555555555555558
         },
+        "expected": {
+          "mean": -0.3333333333333333,
+          "variance": 0.21555555555555558
+        },
+        "ks": {
+          "before": {
+            "statistic": 0.5,
+            "pvalue": null,
+            "calibration": "complete enumeration; descriptive distance"
+          },
+          "after": {
+            "statistic": 0.0,
+            "pvalue": null,
+            "calibration": "complete enumeration; descriptive distance"
+          }
+        },
         "before_after_variance_ratio": 0.30927835051546393
       },
       "geary": {
@@ -25,6 +41,22 @@
           "mean": 1.0,
           "variance": 0.14375000000000002
         },
+        "expected": {
+          "mean": 1.0,
+          "variance": 0.14375000000000002
+        },
+        "ks": {
+          "before": {
+            "statistic": 0.6666666666666667,
+            "pvalue": null,
+            "calibration": "complete enumeration; descriptive distance"
+          },
+          "after": {
+            "statistic": 0.0,
+            "pvalue": null,
+            "calibration": "complete enumeration; descriptive distance"
+          }
+        },
         "before_after_variance_ratio": 0.2608695652173913
       }
     }
@@ -33,6 +65,11 @@
     "n_cells": 256,
     "n_permutations": 4096,
     "seed": 42,
+    "n_reference_permutations": 4096,
+    "reference_seed": 43,
+    "ks_seed": 44,
+    "ks_resamples": 9999,
+    "ks_score_rounding_decimals": 12,
     "metrics": {
       "moran": {
         "expected_mean": -0.00392156862745098,
@@ -43,6 +80,24 @@
         "after": {
           "mean": -0.004160263946142955,
           "variance": 0.001987429934019497
+        },
+        "expected": {
+          "mean": -0.004151713375195807,
+          "variance": 0.002043822663135586
+        },
+        "ks": {
+          "before": {
+            "statistic": 0.099609375,
+            "pvalue": 0.0001,
+            "calibration": "pooled-label permutation test of the two-sided KS statistic",
+            "n_resamples": 9999
+          },
+          "after": {
+            "statistic": 0.01171875,
+            "pvalue": 0.9349,
+            "calibration": "pooled-label permutation test of the two-sided KS statistic",
+            "n_resamples": 9999
+          }
         },
         "before_after_variance_ratio": 0.5704029492635524
       },
@@ -55,6 +110,24 @@
         "after": {
           "mean": 1.0002792272430463,
           "variance": 0.001989173077497397
+        },
+        "expected": {
+          "mean": 1.000265640066603,
+          "variance": 0.0020450564812000064
+        },
+        "ks": {
+          "before": {
+            "statistic": 0.079833984375,
+            "pvalue": 0.0001,
+            "calibration": "pooled-label permutation test of the two-sided KS statistic",
+            "n_resamples": 9999
+          },
+          "after": {
+            "statistic": 0.014404296875,
+            "pvalue": 0.791,
+            "calibration": "pooled-label permutation test of the two-sided KS statistic",
+            "n_resamples": 9999
+          }
         },
         "before_after_variance_ratio": 0.5654594243299468
       }
