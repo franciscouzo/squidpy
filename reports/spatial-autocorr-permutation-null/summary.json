@@ -1,0 +1,71 @@
+{
+  "exact": {
+    "n_cells": 4,
+    "n_permutations": 24,
+    "metrics": {
+      "moran": {
+        "expected_mean": -0.3333333333333333,
+        "before": {
+          "mean": 2.3129646346357427e-18,
+          "variance": 0.06666666666666668
+        },
+        "after": {
+          "mean": -0.3333333333333333,
+          "variance": 0.21555555555555558
+        },
+        "before_after_variance_ratio": 0.30927835051546393
+      },
+      "geary": {
+        "expected_mean": 1.0,
+        "before": {
+          "mean": 0.6,
+          "variance": 0.037500000000000006
+        },
+        "after": {
+          "mean": 1.0,
+          "variance": 0.14375000000000002
+        },
+        "before_after_variance_ratio": 0.2608695652173913
+      }
+    }
+  },
+  "grid": {
+    "n_cells": 256,
+    "n_permutations": 4096,
+    "seed": 42,
+    "metrics": {
+      "moran": {
+        "expected_mean": -0.00392156862745098,
+        "before": {
+          "mean": 7.418877457320038e-05,
+          "variance": 0.0011336358958193883
+        },
+        "after": {
+          "mean": -0.004160263946142955,
+          "variance": 0.001987429934019497
+        },
+        "before_after_variance_ratio": 0.5704029492635524
+      },
+      "geary": {
+        "expected_mean": 1.0,
+        "before": {
+          "mean": 1.0011684058914856,
+          "variance": 0.0011247966632943066
+        },
+        "after": {
+          "mean": 1.0002792272430463,
+          "variance": 0.001989173077497397
+        },
+        "before_after_variance_ratio": 0.5654594243299468
+      }
+    }
+  },
+  "versions": {
+    "numpy": "2.2.4",
+    "scipy": "1.18.1",
+    "pandas": "3.1.1",
+    "scanpy": "1.12.5",
+    "matplotlib": "3.10.9",
+    "numba": "0.68.1"
+  }
+}
